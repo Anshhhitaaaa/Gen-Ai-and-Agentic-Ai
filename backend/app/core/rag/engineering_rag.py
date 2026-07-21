@@ -13,6 +13,7 @@ Two entry points:
 import os
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+# app/core/rag/engineering_rag.py and repository_rag.py
 from langchain_community.vectorstores import Chroma
 
 from app.core.rag.embeddings import get_embeddings
