@@ -44,9 +44,7 @@ def get_architecture(project_id: int, current_user: dict = Depends(get_current_u
     return {"status": "not_implemented", "message": "Architecture detection pending Member D's work"}
 
 
-@router.get("/analytics/{project_id}")
-def get_analytics(project_id: int, current_user: dict = Depends(get_current_user)):
-    return {"status": "not_implemented", "message": "Analytics pending future implementation"}
+ 
 
 
 @router.get("/report/{project_id}/pdf")

@@ -1,70 +1,174 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   FileText, Mic, Github, Archive,
-  CheckCircle, AlertCircle, Loader, ArrowRight,
+  CheckCircle, AlertCircle, Loader,
   MicOff, Upload as UploadIcon
 } from 'lucide-react';
 import AppLayout from '../../layouts/AppLayout';
+import { useAuth } from '../../context/AuthContext';
+import { ENDPOINTS } from '../../config/api';
 
 type Mode = 'text' | 'voice' | 'github' | 'zip';
-type UploadState = 'idle' | 'uploading' | 'analyzing' | 'done' | 'error';
+type UploadState = 'idle' | 'saving' | 'done' | 'error';
 
 const modes: { id: Mode; icon: React.ComponentType<{size?: number; className?: string}>; label: string; description: string }[] = [
   { id: 'text', icon: FileText, label: 'Text Idea', description: 'Describe your project in plain text' },
-  { id: 'voice', icon: Mic, label: 'Voice Input', description: 'Record a voice description' },
+  { id: 'voice', icon: Mic, label: 'Voice Input', description: 'Speak your project description' },
   { id: 'github', icon: Github, label: 'GitHub Repo', description: 'Paste a GitHub repository URL' },
   { id: 'zip', icon: Archive, label: 'ZIP Upload', description: 'Upload a compressed codebase' },
 ];
 
-function ProgressStep({ label, active, done }: { label: string; active: boolean; done: boolean }) {
-  return (
-    <div className={`flex items-center gap-2 text-sm transition-colors ${done ? 'text-accent-600 dark:text-accent-400' : active ? 'text-primary-600 dark:text-primary-400' : 'text-muted'}`}>
-      {done
-        ? <CheckCircle size={16} className="text-accent-500" />
-        : active
-          ? <Loader size={16} className="animate-spin" />
-          : <div className="w-4 h-4 rounded-full border-2 border-current" />
-      }
-      {label}
-    </div>
-  );
+// Browser speech recognition isn't in standard TS lib types — declare minimally here
+interface SpeechRecognitionResultLike {
+  transcript: string;
+}
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: { [index: number]: { [index: number]: SpeechRecognitionResultLike; isFinal: boolean }; length: number };
+}
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
+  const w = window as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
 export default function UploadPage() {
+  const navigate = useNavigate();
+  const { getIdToken } = useAuth();
+
   const [mode, setMode] = useState<Mode>('text');
+  const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(true);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
-  const [step, setStep] = useState(0);
   const [error, setError] = useState('');
 
-  const steps = ['Uploading project', 'Parsing codebase', 'Running AI analysis', 'Generating roadmap'];
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const finalTranscriptRef = useRef('');
 
-  const simulate = async () => {
-    setUploadState('uploading');
-    setStep(0);
-    for (let i = 0; i < steps.length; i++) {
-      setStep(i);
-      await new Promise(r => setTimeout(r, 900));
+  useEffect(() => {
+    const SpeechRecognitionCtor = getSpeechRecognition();
+    if (!SpeechRecognitionCtor) {
+      setVoiceSupported(false);
+      return;
     }
-    setUploadState('done');
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event: SpeechRecognitionEventLike) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const transcriptPiece = result[0].transcript;
+        if (result.isFinal) {
+          finalTranscriptRef.current += transcriptPiece + ' ';
+        } else {
+          interim += transcriptPiece;
+        }
+      }
+      setText(finalTranscriptRef.current + interim);
+    };
+
+    recognition.onerror = () => {
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.stop();
+    };
+  }, []);
+
+  const toggleRecording = () => {
+    if (!recognitionRef.current) return;
+
+    if (isRecording) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+    } else {
+      finalTranscriptRef.current = text ? text + ' ' : '';
+      recognitionRef.current.start();
+      setIsRecording(true);
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (mode === 'text' && !text.trim()) { setError('Please describe your project.'); return; }
+    setError('');
+
+    if (!title.trim()) { setError('Please give your project a title.'); return; }
+    if ((mode === 'text' || mode === 'voice') && !text.trim()) {
+      setError(mode === 'voice' ? 'Please record your idea first.' : 'Please describe your project.');
+      return;
+    }
     if (mode === 'github' && !githubUrl.trim()) { setError('Please enter a GitHub URL.'); return; }
     if (mode === 'zip' && !zipFile) { setError('Please select a ZIP file.'); return; }
-    setError('');
-    simulate();
+
+    setUploadState('saving');
+
+    try {
+      const token = await getIdToken();
+      const payload: Record<string, unknown> = {
+        title: title.trim(),
+        input_type: mode,
+      };
+      if (mode === 'text' || mode === 'voice') payload.idea_description = text.trim();
+      if (mode === 'github') payload.github_url = githubUrl.trim();
+      if (mode === 'zip') payload.zip_filename = zipFile!.name;
+
+      const res = await fetch(ENDPOINTS.projects.create, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) throw new Error('Failed to save project');
+
+      setUploadState('done');
+    } catch {
+      setError('Could not save your project. Please try again.');
+      setUploadState('error');
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file?.name.endsWith('.zip')) setZipFile(file);
+  };
+
+  const resetForm = () => {
+    setUploadState('idle');
+    setTitle(''); setZipFile(null); setText(''); setGithubUrl('');
+    finalTranscriptRef.current = '';
   };
 
   return (
@@ -80,39 +184,24 @@ export default function UploadPage() {
             <div className="w-16 h-16 rounded-full bg-accent-50 dark:bg-accent-950 flex items-center justify-center mx-auto mb-4">
               <CheckCircle size={32} className="text-accent-500" />
             </div>
-            <h2 className="text-xl font-bold text-surface-900 dark:text-surface-100 mb-2">Analysis complete!</h2>
-            <p className="text-muted mb-6">Your project has been analyzed. Here's what's ready:</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
-              {['Health Report', 'Roadmap', 'Architecture', 'AI Chat'].map(item => (
-                <div key={item} className="card p-3 text-sm text-center font-medium text-surface-700 dark:text-surface-300">
-                  <CheckCircle size={16} className="text-accent-500 mx-auto mb-1" />
-                  {item}
-                </div>
-              ))}
-            </div>
+            <h2 className="text-xl font-bold text-surface-900 dark:text-surface-100 mb-2">Project saved!</h2>
+            <p className="text-muted mb-6">
+              Your project is now on your dashboard.
+              {(mode === 'github' || mode === 'zip') && ' AI analysis for this project is coming soon.'}
+            </p>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <a href="/health" className="btn-primary flex items-center gap-2 justify-center">
-                View Health Report <ArrowRight size={16} />
-              </a>
-              <button onClick={() => { setUploadState('idle'); setZipFile(null); setText(''); setGithubUrl(''); }} className="btn-secondary">
-                Upload another
+              <button onClick={() => navigate('/dashboard')} className="btn-primary">
+                Go to Dashboard
+              </button>
+              <button onClick={resetForm} className="btn-secondary">
+                Add another
               </button>
             </div>
           </div>
-        ) : uploadState !== 'idle' ? (
-          <div className="card p-8">
-            <h2 className="font-semibold text-surface-900 dark:text-surface-100 mb-6">Analyzing your project...</h2>
-            <div className="space-y-4 mb-8">
-              {steps.map((s, i) => (
-                <ProgressStep key={s} label={s} active={i === step && uploadState !== 'done'} done={i < step || uploadState === 'done'} />
-              ))}
-            </div>
-            <div className="w-full bg-surface-100 dark:bg-surface-700 rounded-full h-2">
-              <div
-                className="bg-gradient-to-r from-primary-500 to-accent-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${((step + 1) / steps.length) * 100}%` }}
-              />
-            </div>
+        ) : uploadState === 'saving' ? (
+          <div className="card p-8 text-center">
+            <Loader size={24} className="animate-spin mx-auto mb-3 text-primary-500" />
+            <p className="text-muted">Saving your project...</p>
           </div>
         ) : (
           <>
@@ -143,13 +232,25 @@ export default function UploadPage() {
               )}
 
               <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="label" htmlFor="project-title">Project title</label>
+                  <input
+                    id="project-title"
+                    type="text"
+                    className="input"
+                    placeholder="e.g., VectorSearch Engine"
+                    value={title}
+                    onChange={e => setTitle(e.target.value)}
+                  />
+                </div>
+
                 {mode === 'text' && (
                   <div>
                     <label className="label">Describe your project idea</label>
                     <textarea
                       className="input resize-none"
                       rows={8}
-                      placeholder="e.g., A semantic search engine for internal documentation using LangChain and pgvector. The backend is FastAPI with PostgreSQL, and the frontend is React. I want to support multi-tenant access and have OpenAI embeddings for the search..."
+                      placeholder="e.g., A semantic search engine for internal documentation using LangChain and pgvector..."
                       value={text}
                       onChange={e => setText(e.target.value)}
                     />
@@ -159,20 +260,43 @@ export default function UploadPage() {
 
                 {mode === 'voice' && (
                   <div className="flex flex-col items-center py-8 gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setIsRecording(r => !r)}
-                      className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200 ${
-                        isRecording
-                          ? 'bg-red-100 dark:bg-red-950 border-2 border-red-400 animate-pulse-slow'
-                          : 'bg-primary-50 dark:bg-primary-950 border-2 border-primary-300 dark:border-primary-700 hover:border-primary-500'
-                      }`}
-                      aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-                    >
-                      {isRecording ? <MicOff size={28} className="text-red-500" /> : <Mic size={28} className="text-primary-600 dark:text-primary-400" />}
-                    </button>
-                    <p className="text-sm text-muted">{isRecording ? 'Recording... click to stop' : 'Click to start recording'}</p>
-                    {isRecording && <p className="text-xs text-muted">Speak clearly about your project idea, tech stack, and goals.</p>}
+                    {!voiceSupported ? (
+                      <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+                        <AlertCircle size={15} />
+                        Voice input isn't supported in this browser. Try Chrome or Edge, or use Text Idea instead.
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={toggleRecording}
+                          className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200 ${
+                            isRecording
+                              ? 'bg-red-100 dark:bg-red-950 border-2 border-red-400 animate-pulse-slow'
+                              : 'bg-primary-50 dark:bg-primary-950 border-2 border-primary-300 dark:border-primary-700 hover:border-primary-500'
+                          }`}
+                          aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+                        >
+                          {isRecording ? <MicOff size={28} className="text-red-500" /> : <Mic size={28} className="text-primary-600 dark:text-primary-400" />}
+                        </button>
+                        <p className="text-sm text-muted">
+                          {isRecording ? 'Listening... click to stop' : 'Click to start speaking'}
+                        </p>
+
+                        {/* Live transcript, editable in case recognition mishears something */}
+                        <div className="w-full">
+                          <label className="label">Transcript (editable)</label>
+                          <textarea
+                            className="input resize-none"
+                            rows={6}
+                            placeholder="Your spoken words will appear here as you talk..."
+                            value={text}
+                            onChange={e => setText(e.target.value)}
+                          />
+                          <p className="text-xs text-muted mt-1">{text.length} characters</p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -187,7 +311,9 @@ export default function UploadPage() {
                       value={githubUrl}
                       onChange={e => setGithubUrl(e.target.value)}
                     />
-                    <p className="text-xs text-muted mt-1">Public repositories only. Private repo support coming soon.</p>
+                    <p className="text-xs text-muted mt-1">
+                      Saves the repo link now — automatic analysis is coming soon.
+                    </p>
                   </div>
                 )}
 
@@ -220,11 +346,14 @@ export default function UploadPage() {
                         <p className="text-xs text-muted">Max 100MB • .zip files only</p>
                       </div>
                     )}
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-3">
+                      File name is saved now — actual file storage & analysis coming soon.
+                    </p>
                   </div>
                 )}
 
                 <button type="submit" className="btn-primary w-full py-2.5 flex items-center justify-center gap-2">
-                  <UploadIcon size={16} />Analyze project
+                  <UploadIcon size={16} />Save project
                 </button>
               </form>
             </div>

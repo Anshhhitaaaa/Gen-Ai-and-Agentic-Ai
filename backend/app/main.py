@@ -10,6 +10,7 @@ from app.routers import (
     repo as repo_router,
     report as report_router,
     roadmap as roadmap_router,
+    analytics as analytics_router,
     roadmap_alias,
     health_alias,
     stubs,
@@ -34,7 +35,9 @@ app.include_router(report_router.router)
 app.include_router(roadmap_router.router)
 app.include_router(roadmap_alias.router)
 app.include_router(health_alias.router)
+app.include_router(analytics_router.router)
 app.include_router(stubs.router)
+ 
 
 
 @app.get("/")

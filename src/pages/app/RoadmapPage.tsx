@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { Circle } from 'lucide-react';
 import AppLayout from '../../layouts/AppLayout';
 import { useAuth } from '../../context/AuthContext';
+import { useSelectedProject } from '../../context/SelectedProjectContext';
 import { ENDPOINTS } from '../../config/api';
+import ProjectSwitcher from '../../components/shared/ProjectSwitcher';
 
 interface BackendMilestone {
   id: number;
@@ -15,24 +16,29 @@ interface BackendMilestone {
 }
 
 export default function RoadmapPage() {
-  const { projectId } = useParams<{ projectId: string }>();
   const { getIdToken } = useAuth();
+  const { selectedProject, loading: projectsLoading } = useSelectedProject();
   const [milestones, setMilestones] = useState<BackendMilestone[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!selectedProject) {
+      setLoading(false);
+      return;
+    }
 
     async function fetchRoadmap() {
+      setLoading(true);
       try {
         const token = await getIdToken();
-        const res = await fetch(`${ENDPOINTS.roadmap.get(projectId!)}`, {
+        const res = await fetch(ENDPOINTS.roadmap.get(String(selectedProject!.id)), {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error('Failed to load roadmap');
         const data: BackendMilestone[] = await res.json();
         setMilestones(data.sort((a, b) => a.order_index - b.order_index));
+        setError(null);
       } catch {
         setError('Could not load the roadmap. Please try again.');
       } finally {
@@ -40,33 +46,47 @@ export default function RoadmapPage() {
       }
     }
     fetchRoadmap();
-  }, [projectId, getIdToken]);
+  }, [selectedProject, getIdToken]);
+
+  if (projectsLoading || loading) {
+    return (
+      <AppLayout>
+        <div className="max-w-5xl mx-auto"><div className="card p-8 text-center text-muted">Loading roadmap...</div></div>
+      </AppLayout>
+    );
+  }
+
+  if (!selectedProject) {
+    return (
+      <AppLayout>
+        <div className="max-w-5xl mx-auto space-y-6">
+          <h1 className="page-title">Roadmap</h1>
+          <div className="card p-8 text-center text-muted">You don't have any projects yet. Upload one to get started.</div>
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>
       <div className="max-w-5xl mx-auto space-y-6 animate-fade-in">
-        <div>
-          <h1 className="page-title">Roadmap</h1>
-          <p className="text-muted mt-1">
-            {loading ? 'Loading...' : `${milestones.length} milestone${milestones.length !== 1 ? 's' : ''}`}
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="page-title">Roadmap</h1>
+            <p className="text-muted mt-1">
+              {selectedProject.title} — {milestones.length} milestone{milestones.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+          <ProjectSwitcher />
         </div>
 
-        {loading && (
-          <div className="card p-8 text-center text-muted">Loading roadmap...</div>
+        {error && <div className="card p-8 text-center text-red-500">{error}</div>}
+
+        {!error && milestones.length === 0 && (
+          <div className="card p-8 text-center text-muted">No milestones yet for this project.</div>
         )}
 
-        {!loading && error && (
-          <div className="card p-8 text-center text-red-500">{error}</div>
-        )}
-
-        {!loading && !error && milestones.length === 0 && (
-          <div className="card p-8 text-center text-muted">
-            No milestones yet for this project.
-          </div>
-        )}
-
-        {!loading && !error && milestones.length > 0 && (
+        {!error && milestones.length > 0 && (
           <div className="space-y-3">
             {milestones.map((m, i) => (
               <div key={m.id} className="flex gap-4">

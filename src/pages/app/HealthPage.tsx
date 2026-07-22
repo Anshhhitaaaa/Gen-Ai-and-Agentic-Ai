@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
 import {
   Activity, TrendingUp, AlertTriangle, CheckCircle,
   ChevronDown, ChevronUp, Shield, FileText, Code2, Server, Zap, Rocket
 } from 'lucide-react';
 import AppLayout from '../../layouts/AppLayout';
 import { useAuth } from '../../context/AuthContext';
+import { useSelectedProject } from '../../context/SelectedProjectContext';
 import { ENDPOINTS } from '../../config/api';
+import ProjectSwitcher from '../../components/shared/ProjectSwitcher';
 
 type Status = 'excellent' | 'good' | 'warning' | 'critical';
 
@@ -21,7 +22,7 @@ interface BackendReport {
   security_score: number | null;
   performance_score: number | null;
   ai_commentary: string | null;
-  category_details: string | null; // JSON string
+  category_details: string | null;
   generated_at: string;
 }
 
@@ -170,55 +171,61 @@ function OverallScoreGauge({ score }: { score: number }) {
 }
 
 export default function HealthPage() {
-  const { projectId } = useParams<{ projectId: string }>();
   const { getIdToken } = useAuth();
-  const [projectName, setProjectName] = useState('');
+  const { selectedProject, loading: projectsLoading } = useSelectedProject();
   const [report, setReport] = useState<BackendReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!selectedProject) {
+      setLoading(false);
+      return;
+    }
 
-    async function fetchData() {
+    async function fetchReport() {
+      setLoading(true);
       try {
         const token = await getIdToken();
-        const headers = { Authorization: `Bearer ${token}` };
-
-        const [projectRes, reportsRes] = await Promise.all([
-          fetch(ENDPOINTS.projects.get(projectId!), { headers }),
-          fetch(ENDPOINTS.health.report(projectId!), { headers }),
-        ]);
-
-        if (projectRes.ok) {
-          const project = await projectRes.json();
-          setProjectName(project.title);
-        }
-
-        if (!reportsRes.ok) throw new Error('Failed to load health report');
-        const reports: BackendReport[] = await reportsRes.json();
+        const res = await fetch(ENDPOINTS.health.report(String(selectedProject!.id)), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Failed to load health report');
+        const reports: BackendReport[] = await res.json();
 
         if (reports.length === 0) {
           setReport(null);
         } else {
-          const latest = reports.reduce((a, b) =>
-            new Date(a.generated_at) > new Date(b.generated_at) ? a : b
-          );
+          const latest = reports.reduce((a, b) => new Date(a.generated_at) > new Date(b.generated_at) ? a : b);
           setReport(latest);
         }
+        setError(null);
       } catch {
         setError('Could not load the health report. Please try again.');
       } finally {
         setLoading(false);
       }
     }
-    fetchData();
-  }, [projectId, getIdToken]);
+    fetchReport();
+  }, [selectedProject, getIdToken]);
 
-  if (loading) {
+  if (projectsLoading || loading) {
     return (
       <AppLayout>
         <div className="max-w-5xl mx-auto"><div className="card p-8 text-center text-muted">Loading health report...</div></div>
+      </AppLayout>
+    );
+  }
+
+  if (!selectedProject) {
+    return (
+      <AppLayout>
+        <div className="max-w-5xl mx-auto space-y-6">
+          <h1 className="page-title">Project Health</h1>
+          <div className="card p-8 text-center text-muted">
+            You don't have any projects yet. Upload one to get started.
+          </div>
+        </div>
       </AppLayout>
     );
   }
@@ -235,9 +242,12 @@ export default function HealthPage() {
     return (
       <AppLayout>
         <div className="max-w-5xl mx-auto space-y-6">
-          <h1 className="page-title">Project Health</h1>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <h1 className="page-title">Project Health</h1>
+            <ProjectSwitcher />
+          </div>
           <div className="card p-8 text-center text-muted">
-            No health report has been generated for this project yet.
+            No health report has been generated for {selectedProject.title} yet.
           </div>
         </div>
       </AppLayout>
@@ -256,15 +266,13 @@ export default function HealthPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="page-title">Project Health</h1>
-            <p className="text-muted mt-1">{projectName}</p>
+            <p className="text-muted mt-1">{selectedProject.title}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-3">
+            <ProjectSwitcher />
             <a href="/report" className="btn-secondary flex items-center gap-2 text-sm">
               <FileText size={15} />Export Report
             </a>
-            <button className="btn-primary text-sm flex items-center gap-2">
-              <Activity size={15} />Re-analyze
-            </button>
           </div>
         </div>
 
